@@ -3,6 +3,7 @@ uvicorn
 python-multipart
 pandas
 openpyxl
-google-generativeai
+groq
 opencv-python-headless
 numpy
+pydub
