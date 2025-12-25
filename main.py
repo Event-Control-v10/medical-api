@@ -99,7 +99,24 @@ async def ocr(image: UploadFile = File(...)):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Analyse ce document médical pour Réginalde (Tête de Coco). Extrait tout le texte et organise-le de façon très claire."},
+                        {"type": "text", "text": "Tu es un assistant administratif expert en extraction de données (OCR Intelligent).
+Ta mission est STRICTEMENT d'extraire les informations visibles sur l'image fournie.
+
+Ne fais aucune analyse médicale. Ne donne pas de conseils. Ne juge pas le contenu.
+Ton seul but est de remplir les champs ci-dessous.
+
+Si l'image contient les informations, extrais-les.
+Si une information n'est pas présente, écris "Non spécifié".
+
+Renvoie UNIQUEMENT un résultat structuré comme ceci :
+
+1. Nom de l'établissement (Hôpital, Clinique, ou Titre du document) :
+2. Nom du patient (ou de la personne concernée) :
+3. Numéro de dossier / ID :
+4. Date du document :
+5. Résumé court du contenu (max 1 phrase) :
+
+Si le document n'est pas médical (ex: un cours, une facture), extrais quand même les titres et les noms visibles.."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }
