@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Reginalde's Hub Pro 🥥</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #0f172a; transition: all 0.3s; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .tab-active { border-bottom: 4px solid #10b981; color: #10b981; }
+        .comfort-mode { font-size: 1.3rem; }
+        .comfort-mode h1 { font-size: 2.5rem; }
+        .shimmer { background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+        @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+    </style>
+</head>
+<body id="mainBody" class="text-slate-200 min-h-screen p-4 pb-10">
+
+    <!-- Header & Toggle -->
+    <div class="max-w-xl mx-auto flex justify-between items-center py-6">
+        <div>
+            <h1 class="text-2xl font-black text-white">Réginalde Hub 🥥</h1>
+            <p class="text-slate-400 text-xs">Pour ma Tête de Coco préférée</p>
+        </div>
+        <button onclick="toggleComfort()" class="bg-amber-500/20 text-amber-400 px-4 py-2 rounded-full text-xs font-bold border border-amber-500/30 active:scale-90 transition-all">
+            🕶️ Mode Yeux
+        </button>
+    </div>
+
+    <!-- Navigation -->
+    <div class="max-w-xl mx-auto flex justify-around mb-8 border-b border-slate-800 text-sm font-bold">
+        <button onclick="showTab('excel')" id="t-excel" class="pb-3 tab-active">EXCEL</button>
+        <button onclick="showTab('scan')" id="t-scan" class="pb-3 text-slate-500">SCANNER</button>
+        <button onclick="showTab('hist')" id="t-hist" class="pb-3 text-slate-500">DOSSIERS</button>
+    </div>
+
+    <div class="max-w-xl mx-auto space-y-6">
+        
+        <!-- SECTION EXCEL -->
+        <div id="s-excel" class="space-y-4">
+            <div class="glass rounded-[2.5rem] p-6 text-center">
+                <input type="file" id="fExcel" class="hidden" accept=".xlsx">
+                <div onclick="document.getElementById('fExcel').click()" class="border-2 border-dashed border-slate-700 rounded-3xl p-8 hover:bg-emerald-500/5 transition-all cursor-pointer">
+                    <i class="fas fa-file-excel text-3xl text-emerald-400 mb-2"></i>
+                    <p id="nExcel" class="text-slate-400 text-sm">Dépose ton rapport ici, Réginalde</p>
+                </div>
+                <textarea id="tExcel" class="w-full bg-slate-900/50 mt-4 rounded-2xl p-4 text-white outline-none border border-slate-700" rows="3" placeholder="Dis-moi quoi modifier (ex: ajoute 1 visite à...)"></textarea>
+                <button id="bVoice" class="w-full mt-4 bg-slate-800 py-4 rounded-2xl font-bold flex justify-center gap-3 active:bg-slate-700 transition-all">
+                    <i class="fas fa-microphone text-rose-500"></i> <span id="vTxt">Parle-moi, Tête de Coco</span>
+                </button>
+                <button id="bSubmit" class="w-full mt-4 bg-emerald-600 py-5 rounded-[2rem] font-black text-xl shadow-lg shadow-emerald-500/20 active:scale-95 transition-all">LANCER LA MAGIE ✨</button>
+            </div>
+        </div>
+
+        <!-- SECTION SCANNER (YEUX BIONIQUES) -->
+        <div id="s-scan" class="hidden space-y-4">
+            <div class="glass rounded-[2.5rem] p-6 text-center">
+                <p class="text-sm text-slate-400 mb-6">L'IA déchiffre les documents flous pour tes yeux 🥥</p>
+                <input type="file" id="fScan" class="hidden" accept="image/*" capture="environment">
+                <button onclick="document.getElementById('fScan').click()" class="w-full bg-blue-600 py-5 rounded-2xl font-black text-lg active:scale-95 transition-all">📸 PRENDRE UNE PHOTO</button>
+                
+                <div id="ocrBox" class="hidden mt-6 space-y-4">
+                    <div class="rounded-xl overflow-hidden border border-slate-700">
+                        <img id="resImg" class="w-full h-auto cursor-zoom-in" onclick="window.open(this.src)">
+                    </div>
+                    <div id="resTxt" class="bg-slate-900/90 p-5 rounded-xl text-left text-lg leading-relaxed border border-emerald-500/30 whitespace-pre-wrap shadow-inner"></div>
+                    <button id="bCopy" class="w-full bg-slate-700 py-3 rounded-xl font-bold">📋 COPIER CE TEXTE</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTION HISTORIQUE -->
+        <div id="s-hist" class="hidden space-y-4">
+            <div class="glass rounded-[2.5rem] p-6">
+                <h3 class="font-bold mb-4">Tes derniers rapports modifiés 📂</h3>
+                <div id="hList" class="space-y-2 text-sm text-slate-500">Chargement...</div>
+            </div>
+        </div>
+
+        <!-- Animation Loading -->
+        <div id="loading" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-6">
+            <div class="text-center">
+                <div class="shimmer w-20 h-20 rounded-full bg-emerald-500/20 mb-6 mx-auto flex items-center justify-center">
+                    <span class="text-3xl animate-bounce">🥥</span>
+                </div>
+                <p id="loadTxt" class="text-emerald-400 font-bold tracking-widest uppercase text-xs">L'IA travaille pour toi...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = "https://medical-api-2td0.onrender.com"; 
+        let audioB; let mediaR; let chunks = [];
+
+        function vib(t){ if(navigator.vibrate) navigator.vibrate(t); }
+
+        function toggleComfort() {
+            document.body.classList.toggle('comfort-mode');
+            vib(40);
+        }
+
+        function showTab(t){
+            ['excel', 'scan', 'hist'].forEach(k => {
+                document.getElementById('s-'+k).classList.add('hidden');
+                document.getElementById('t-'+k).className = "pb-3 text-slate-500";
+            });
+            document.getElementById('s-'+t).classList.remove('hidden');
+            document.getElementById('t-'+t).className = "pb-3 tab-active";
+            if(t === 'hist') loadH();
+            vib(20);
+        }
+
+        // --- LOGIQUE EXCEL ---
+        document.getElementById('fExcel').onchange = e => { 
+            document.getElementById('nExcel').innerText = e.target.files[0] ? e.target.files[0].name : "Fichier prêt !"; 
+            vib(60); 
+        };
+
+        document.getElementById('bVoice').onclick = async () => {
+            if(!mediaR || mediaR.state === "inactive"){
+                const s = await navigator.mediaDevices.getUserMedia({audio:true});
+                mediaR = new MediaRecorder(s); mediaR.start();
+                document.getElementById('vTxt').innerText = "Je t'écoute Réginalde...";
+                vib(50);
+                mediaR.ondataavailable = e => chunks.push(e.data);
+                mediaR.onstop = () => { 
+                    audioB = new Blob(chunks, {type:'audio/wav'}); 
+                    chunks=[]; 
+                    document.getElementById('vTxt').innerText = "Voix capturée ! ✅"; 
+                    vib([50,30,50]); 
+                };
+            } else { mediaR.stop(); }
+        };
+
+        document.getElementById('bSubmit').onclick = async () => {
+            const f = document.getElementById('fExcel').files[0];
+            if(!f) return alert("Hé Tête de Coco, charge un fichier ! 🥥");
+            
+            document.getElementById('loading').classList.remove('hidden');
+            const fd = new FormData(); 
+            fd.append('file', f);
+            fd.append('instruction', document.getElementById('tExcel').value);
+            if(audioB) fd.append('audio', audioB, 'v.wav');
+
+            try {
+                const r = await fetch(API+'/process', {method:'POST', body:fd});
+                if(r.ok){
+                    const b = await r.blob(); const u = URL.createObjectURL(b);
+                    const a = document.createElement('a'); a.href=u; a.download="Rapport_Reginalde_OK.xlsx"; a.click();
+                    confetti({particleCount:150, spread:70, origin:{y:0.6}, colors:['#10b981','#ffffff']});
+                    vib([100,50,100]);
+                }
+            } catch(e) { alert("Erreur de connexion !"); }
+            document.getElementById('loading').classList.add('hidden');
+        };
+
+        // --- LOGIQUE SCANNER ---
+        document.getElementById('fScan').onchange = async e => {
+            const f = e.target.files[0]; if(!f) return;
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('loadTxt').innerText = "DÉCHIFFRAGE DU DOCUMENT...";
+            
+            const fd = new FormData(); fd.append('image', f);
+            try {
+                const r = await fetch(API+'/ocr', {method:'POST', body:fd});
+                const d = await r.json();
+                document.getElementById('ocrBox').classList.remove('hidden');
+                document.getElementById('resImg').src = d.image;
+                document.getElementById('resTxt').innerText = d.text;
+                vib(100);
+            } catch(e) { alert("Erreur lors de l'analyse."); }
+            document.getElementById('loading').classList.add('hidden');
+        };
+
+        document.getElementById('bCopy').onclick = () => {
+            navigator.clipboard.writeText(document.getElementById('resTxt').innerText);
+            vib(40); alert("Texte copié ! ✅");
+        };
+
+        // --- LOGIQUE HISTORIQUE ---
+        async function loadH(){
+            try {
+                const r = await fetch(API+'/history'); 
+                const d = await r.json();
+                const list = document.getElementById('hList');
+                if(d.files.length === 0) list.innerHTML = "Aucun fichier pour le moment.";
+                else list.innerHTML = d.files.map(f => `
+                    <div class="flex justify-between items-center bg-slate-800/50 p-4 rounded-2xl border border-white/5 shadow-sm">
+                        <span class="text-[10px] truncate w-32 font-mono">${f}</span>
+                        <a href="${API}/download/${f}" class="text-emerald-400 font-bold text-xs bg-emerald-500/10 px-3 py-1 rounded-lg">📥 Ouvrir</a>
+                    </div>
+                `).join('');
+            } catch(e) { document.getElementById('hList').innerText = "Erreur historique."; }
+        }
+    </script>
+</body>
+</html>
