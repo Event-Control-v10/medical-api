@@ -45,3 +45,6 @@ async def process(file: UploadFile = File(...), instruction: str = Form(None), a
     out_path = "resultat.xlsx"
     wb.save(out_path)
     return FileResponse(out_path, filename="Rapport_Medical.xlsx")
+
+@app.get("/healthz")
+async def healthz(): return {"status": "ok"}
