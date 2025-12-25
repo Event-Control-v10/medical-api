@@ -6,4 +6,3 @@ openpyxl
 groq
 opencv-python-headless
 numpy
-pydub
