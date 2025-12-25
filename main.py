@@ -25,14 +25,14 @@ if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# --- CONFIGURATION DES MODÈLES DÉCEMBRE 2025 ---
+# Modèles Décembre 2025
 MODEL_EXCEL = "llama-3.3-70b-versatile"
-MODEL_VISION = "llama-3.2-11b-vision-preview" # Version stable et supportée
+MODEL_VISION = "llama-3.2-11b-vision-preview"
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- PARTIE EXCEL : INTELLIGENCE RENFORCÉE ---
+# --- PARTIE EXCEL ---
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
     try:
@@ -46,24 +46,12 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
             trans = client.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
             user_text = trans.text
 
-        if not user_text: return {"error": "Aucune consigne"}
+        if not user_text: return {"error": "No text"}
 
-        # Prompt amélioré pour une meilleure compréhension des colonnes
-        prompt = f"""
-        Tu es l'assistant personnel de Réginalde. Modifie le DataFrame 'df'.
-        Colonnes : {list(df_orig.columns)}
-        Instruction : "{user_text}"
-        
-        RÈGLES :
-        - Écris UNIQUEMENT le code Python (df.at[index, 'colonne'] = valeur).
-        - Sois très précis sur les noms des colonnes.
-        - Ne parle pas, ne mets pas de markdown.
-        """
-        
+        prompt = f"DataFrame df: {list(df_orig.columns)}. Instruction: {user_text}. Code Python uniquement (df.at[index, 'col'] = val)."
         chat = client.chat.completions.create(
             model=MODEL_EXCEL, 
-            messages=[{"role": "system", "content": "Tu es un expert en code Pandas chirurgical."},
-                      {"role": "user", "content": prompt}], 
+            messages=[{"role": "user", "content": prompt}], 
             temperature=0
         )
         code = chat.choices[0].message.content.strip().replace("```python", "").replace("```", "")
@@ -75,7 +63,6 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         wb = load_workbook(io.BytesIO(file_bytes))
         ws = wb.active
         START_ROW = 5 
-        
         for r_idx, row in enumerate(df_mod.values):
             for c_idx, val in enumerate(row):
                 ws.cell(row=START_ROW + r_idx, column=c_idx + 1).value = val
@@ -88,14 +75,19 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- PARTIE SCANNER : MODÈLE 11B STABLE ---
+# --- PARTIE SCANNER CORRIGÉE (FIX RGBA) ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
         img_bytes = await image.read()
         
-        # Optimisation de l'image pour Render (évite les erreurs de mémoire)
+        # Correction de l'erreur RGBA : 
+        # On ouvre l'image et on la convertit de force en RGB (supprime la transparence)
         img = Image.open(io.BytesIO(img_bytes))
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        
+        # Redimensionnement pour la vitesse
         img.thumbnail((1000, 1000)) 
         
         buffered = io.BytesIO()
@@ -108,7 +100,7 @@ async def ocr(image: UploadFile = File(...)):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Extrait tout le texte de ce document médical pour Réginalde (Tête de Coco). Organise les informations de manière très lisible."},
+                        {"type": "text", "text": "Extrait le texte de ce document pour Réginalde. Sois précis."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }
