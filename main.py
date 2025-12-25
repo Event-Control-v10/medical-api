@@ -12,7 +12,6 @@ from PIL import Image
 
 app = FastAPI()
 
-# Configuration CORS pour autoriser le lien GitHub Pages
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,19 +25,18 @@ if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# Modèles à jour Décembre 2025
+# --- CONFIGURATION DES MODÈLES (VERSION DÉCEMBRE 2025) ---
 MODEL_EXCEL = "llama-3.3-70b-versatile"
-MODEL_VISION = "llama-3.2-11b-vision-preview"
+MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct" # Nouveau modèle Llama 4
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- PARTIE EXCEL (MODIFICATION DE RAPPORT) ---
+# --- PARTIE EXCEL ---
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
     try:
         file_bytes = await file.read()
-        # On lit l'Excel (on saute les 3 lignes de titres orange)
         df_orig = pd.read_excel(io.BytesIO(file_bytes), skiprows=3)
         df_mod = df_orig.copy()
 
@@ -62,7 +60,6 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         exec(code, {}, exec_scope)
         df_mod = exec_scope["df"]
 
-        # Ré-injection dans le fichier original (Protection du design orange)
         wb = load_workbook(io.BytesIO(file_bytes))
         ws = wb.active
         START_ROW = 5 
@@ -79,37 +76,30 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- PARTIE SCANNER (BIONIQUE - FIX MODES IMAGES) ---
+# --- PARTIE SCANNER (VERSION LLAMA 4) ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
         img_bytes = await image.read()
         
-        # --- SÉCURITÉ IMAGE TOTALE ---
-        # On ouvre l'image avec Pillow
         img = Image.open(io.BytesIO(img_bytes))
-        
-        # Si l'image n'est pas en RGB pur (RGBA, P, CMYK, etc.), on la convertit
-        # Cela règle les erreurs "cannot write mode RGBA" et "mode P"
         if img.mode != "RGB":
             img = img.convert("RGB")
         
-        # Redimensionnement préventif pour la mémoire de Render
-        img.thumbnail((1000, 1000)) 
+        img.thumbnail((1024, 1024)) 
         
-        # Sauvegarde en JPEG haute qualité pour l'IA
         buffered = io.BytesIO()
         img.save(buffered, format="JPEG", quality=85)
         base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-        # Appel à Groq Vision 11B
+        # Utilisation du nouveau modèle Llama 4 Multimodal
         response = client.chat.completions.create(
             model=MODEL_VISION,
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Extrait le texte de ce document pour Réginalde (Tête de Coco). Organise-le bien."},
+                        {"type": "text", "text": "Analyse ce document médical pour Réginalde (Tête de Coco). Extrait tout le texte et organise-le de façon très claire."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }
