@@ -6,4 +6,4 @@ openpyxl
 groq
 opencv-python-headless
 numpy
-jinja2
+pydub
