@@ -25,10 +25,14 @@ if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
+# Modèles à jour (Décembre 2025)
+MODEL_TEXT = "llama-3.3-70b-versatile"
+MODEL_VISION = "llama-3.2-11b-vision-preview" # Version stable actuelle
+
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- PARTIE EXCEL (FONCTIONNELLE) ---
+# --- PARTIE EXCEL ---
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
     try:
@@ -42,8 +46,10 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
             trans = client.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
             user_text = trans.text
 
-        prompt = f"DataFrame df: {list(df_orig.columns)}. Instruction: {user_text}. Code Python uniquement pour modifier df via df.at. Pas de blabla."
-        chat = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0)
+        if not user_text: return {"error": "No instruction"}
+
+        prompt = f"DataFrame df colonnes: {list(df_orig.columns)}. Instruction: {user_text}. Code Python uniquement (df.at[index, 'col'] = val). Pas de blabla."
+        chat = client.chat.completions.create(model=MODEL_TEXT, messages=[{"role": "user", "content": prompt}], temperature=0)
         code = chat.choices[0].message.content.strip().replace("```python", "").replace("```", "")
 
         exec_scope = {"df": df_mod, "pd": pd}
@@ -52,9 +58,12 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
 
         wb = load_workbook(io.BytesIO(file_bytes))
         ws = wb.active
+        START_ROW = 5 
+        
+        # Injection chirurgicale
         for r_idx, row in enumerate(df_mod.values):
             for c_idx, val in enumerate(row):
-                ws.cell(row=5+r_idx, column=c_idx+1).value = val
+                ws.cell(row=START_ROW + r_idx, column=c_idx + 1).value = val
 
         ts = time.strftime("%Y%m%d-%H%M%S")
         fname = f"Reginalde_{ts}.xlsx"
@@ -64,28 +73,28 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- PARTIE SCANNER (VERSION LÉGÈRE) ---
+# --- PARTIE SCANNER CORRIGÉE (MODÈLE 11B) ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
         img_bytes = await image.read()
         
-        # On réduit la taille de l'image pour ne pas faire planter Render (limite 512MB)
+        # Redimensionnement préventif (Gain de vitesse et mémoire)
         img = Image.open(io.BytesIO(img_bytes))
-        img.thumbnail((1024, 1024)) # Redimensionne si l'image est trop grande
+        img.thumbnail((800, 800)) 
         
         buffered = io.BytesIO()
-        img.save(buffered, format="JPEG", quality=85)
+        img.save(buffered, format="JPEG", quality=80)
         base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-        # Utilisation du modèle Vision 90B
+        # Appel au modèle Vision 11B (le remplaçant du 90B)
         response = client.chat.completions.create(
-            model="llama-3.2-90b-vision-preview",
+            model=MODEL_VISION,
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Extrait le texte de ce document médical pour Réginalde. Organise-le bien par sections."},
+                        {"type": "text", "text": "Extrait le texte de ce document médical pour Réginalde. Organise les infos par rubriques claires."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }
@@ -97,9 +106,8 @@ async def ocr(image: UploadFile = File(...)):
             "image": f"data:image/jpeg;base64,{base64_image}"
         }
     except Exception as e:
-        # On renvoie l'erreur précise pour débugger
-        print(f"Erreur OCR : {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"DEBUG OCR ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur Vision : {str(e)}")
 
 @app.get("/history")
 async def get_history():
