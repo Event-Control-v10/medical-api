@@ -25,14 +25,14 @@ if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# Modèles à jour (Décembre 2025)
-MODEL_TEXT = "llama-3.3-70b-versatile"
-MODEL_VISION = "llama-3.2-11b-vision-preview" # Version stable actuelle
+# --- CONFIGURATION DES MODÈLES DÉCEMBRE 2025 ---
+MODEL_EXCEL = "llama-3.3-70b-versatile"
+MODEL_VISION = "llama-3.2-11b-vision-preview" # Version stable et supportée
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- PARTIE EXCEL ---
+# --- PARTIE EXCEL : INTELLIGENCE RENFORCÉE ---
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
     try:
@@ -46,10 +46,26 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
             trans = client.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
             user_text = trans.text
 
-        if not user_text: return {"error": "No instruction"}
+        if not user_text: return {"error": "Aucune consigne"}
 
-        prompt = f"DataFrame df colonnes: {list(df_orig.columns)}. Instruction: {user_text}. Code Python uniquement (df.at[index, 'col'] = val). Pas de blabla."
-        chat = client.chat.completions.create(model=MODEL_TEXT, messages=[{"role": "user", "content": prompt}], temperature=0)
+        # Prompt amélioré pour une meilleure compréhension des colonnes
+        prompt = f"""
+        Tu es l'assistant personnel de Réginalde. Modifie le DataFrame 'df'.
+        Colonnes : {list(df_orig.columns)}
+        Instruction : "{user_text}"
+        
+        RÈGLES :
+        - Écris UNIQUEMENT le code Python (df.at[index, 'colonne'] = valeur).
+        - Sois très précis sur les noms des colonnes.
+        - Ne parle pas, ne mets pas de markdown.
+        """
+        
+        chat = client.chat.completions.create(
+            model=MODEL_EXCEL, 
+            messages=[{"role": "system", "content": "Tu es un expert en code Pandas chirurgical."},
+                      {"role": "user", "content": prompt}], 
+            temperature=0
+        )
         code = chat.choices[0].message.content.strip().replace("```python", "").replace("```", "")
 
         exec_scope = {"df": df_mod, "pd": pd}
@@ -60,7 +76,6 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         ws = wb.active
         START_ROW = 5 
         
-        # Injection chirurgicale
         for r_idx, row in enumerate(df_mod.values):
             for c_idx, val in enumerate(row):
                 ws.cell(row=START_ROW + r_idx, column=c_idx + 1).value = val
@@ -73,28 +88,27 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- PARTIE SCANNER CORRIGÉE (MODÈLE 11B) ---
+# --- PARTIE SCANNER : MODÈLE 11B STABLE ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
         img_bytes = await image.read()
         
-        # Redimensionnement préventif (Gain de vitesse et mémoire)
+        # Optimisation de l'image pour Render (évite les erreurs de mémoire)
         img = Image.open(io.BytesIO(img_bytes))
-        img.thumbnail((800, 800)) 
+        img.thumbnail((1000, 1000)) 
         
         buffered = io.BytesIO()
-        img.save(buffered, format="JPEG", quality=80)
+        img.save(buffered, format="JPEG", quality=85)
         base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-        # Appel au modèle Vision 11B (le remplaçant du 90B)
         response = client.chat.completions.create(
             model=MODEL_VISION,
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Extrait le texte de ce document médical pour Réginalde. Organise les infos par rubriques claires."},
+                        {"type": "text", "text": "Extrait tout le texte de ce document médical pour Réginalde (Tête de Coco). Organise les informations de manière très lisible."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }
@@ -106,7 +120,6 @@ async def ocr(image: UploadFile = File(...)):
             "image": f"data:image/jpeg;base64,{base64_image}"
         }
     except Exception as e:
-        print(f"DEBUG OCR ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erreur Vision : {str(e)}")
 
 @app.get("/history")
