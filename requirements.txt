@@ -4,6 +4,5 @@ python-multipart
 pandas
 openpyxl
 groq
-opencv-python-headless
-numpy
+pillow
 pydub
