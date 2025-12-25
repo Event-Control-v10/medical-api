@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from openpyxl import load_workbook
 import google.generativeai as genai
+import re
 
 app = FastAPI()
 
@@ -27,51 +28,55 @@ if not os.path.exists(HISTORY_DIR):
 
 # CONFIGURATION GEMINI
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-model_text = genai.GenerativeModel('gemini-1.5-flash')
-# On utilise le même modèle pour la vision car 1.5 Flash gère tout
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- EXCEL : MODIFICATION ---
+def clean_code(text):
+    """Extrait uniquement le code Python entre les balises ou nettoie le texte"""
+    if "```python" in text:
+        text = re.search(r"```python (.*?)```", text, re.DOTALL).group(1)
+    elif "```" in text:
+        text = re.search(r"```(.*?)```", text, re.DOTALL).group(1)
+    return text.strip().replace("```python", "").replace("```", "")
+
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None)):
     try:
         file_bytes = await file.read()
+        # On lit l'original
         df_orig = pd.read_excel(io.BytesIO(file_bytes), skiprows=3)
         df_mod = df_orig.copy()
 
-        if not instruction:
-            return {"error": "Aucune instruction reçue"}
-
-        # PROMPT POUR GEMINI
         prompt = f"""
-        Tu es un expert en Python Pandas. Modifie le DataFrame 'df' (Colonnes: {list(df_orig.columns)}).
-        Instruction de Réginalde : "{instruction}"
+        Objet : DataFrame 'df'
+        Colonnes : {list(df_orig.columns)}
+        Action de Réginalde : "{instruction}"
         
-        RÈGLES :
-        - Réponds UNIQUEMENT avec le code Python.
-        - Utilise df.at[index, 'colonne'] pour être précis.
-        - Pas de texte avant ou après, pas de ```python.
+        CONSIGNE : Écris uniquement le code Python pour modifier 'df'. 
+        - Utilise df.at[index, 'colonne'] ou df.loc.
+        - Ne réponds que par le code, sans explications.
         """
         
-        response = model_text.generate_content(prompt)
-        code = response.text.strip().replace("```python", "").replace("```", "")
+        response = model.generate_content(prompt)
+        code = clean_code(response.text)
 
-        # Exécution
+        # Exécution sécurisée
         exec_scope = {"df": df_mod, "pd": pd, "np": np}
         exec(code, {}, exec_scope)
         df_mod = exec_scope["df"]
 
-        # Sauvegarde chirurgicale (Design)
+        # Ré-injection dans Excel (Garde le Design)
         wb = load_workbook(io.BytesIO(file_bytes))
         ws = wb.active
         START_ROW = 5
         
-        # Nettoyage et injection
+        # On vide uniquement les données (pas le design)
         for row in ws.iter_rows(min_row=START_ROW, max_row=ws.max_row):
             for cell in row: cell.value = None
 
+        # On remplit avec les nouvelles valeurs
         for r_idx, row_values in enumerate(df_mod.values):
             for c_idx, value in enumerate(row_values):
                 ws.cell(row=START_ROW + r_idx, column=c_idx + 1).value = value
@@ -83,33 +88,26 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         return FileResponse(fpath, filename=fname)
 
     except Exception as e:
+        print(f"ERREUR : {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- SCANNER : YEUX BIONIQUES GEMINI ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
         img_bytes = await image.read()
-        
-        # Amélioration image
         nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         enhanced = cv2.convertScaleAbs(img, alpha=1.5, beta=10)
         _, buffer = cv2.imencode('.jpg', enhanced)
         
-        # Préparation pour Gemini Vision
         contents = [
-            "Extrait le texte de ce document médical pour Réginalde. Organise-le de façon très claire et aérée.",
+            "Analyse ce document pour Réginalde (Tête de Coco). Extrait le texte de façon claire.",
             {"mime_type": "image/jpeg", "data": buffer.tobytes()}
         ]
         
-        response = model_text.generate_content(contents)
+        response = model.generate_content(contents)
         b64_img = base64.b64encode(buffer).decode('utf-8')
-
-        return {
-            "text": response.text, 
-            "image": f"data:image/jpeg;base64,{b64_img}"
-        }
+        return {"text": response.text, "image": f"data:image/jpeg;base64,{b64_img}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
