@@ -2,14 +2,13 @@ import os
 import io
 import time
 import base64
-import cv2
-import numpy as np
-import pandas as pd
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+import pandas as pd
 from openpyxl import load_workbook
 from groq import Groq
+from PIL import Image
 
 app = FastAPI()
 
@@ -29,7 +28,7 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- EXCEL ---
+# --- PARTIE EXCEL (FONCTIONNELLE) ---
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
     try:
@@ -43,11 +42,11 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
             trans = client.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
             user_text = trans.text
 
-        prompt = f"DataFrame df: {list(df_orig.columns)}. Instruction: {user_text}. Code Python uniquement pour modifier df via df.at."
+        prompt = f"DataFrame df: {list(df_orig.columns)}. Instruction: {user_text}. Code Python uniquement pour modifier df via df.at. Pas de blabla."
         chat = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0)
         code = chat.choices[0].message.content.strip().replace("```python", "").replace("```", "")
 
-        exec_scope = {"df": df_mod, "pd": pd, "np": np}
+        exec_scope = {"df": df_mod, "pd": pd}
         exec(code, {}, exec_scope)
         df_mod = exec_scope["df"]
 
@@ -65,25 +64,28 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- SCANNER (CORRIGÉ) ---
+# --- PARTIE SCANNER (VERSION LÉGÈRE) ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
-        print("Début du scan...")
         img_bytes = await image.read()
         
-        # Encodage direct en Base64 pour l'IA
-        base64_image = base64.b64encode(img_bytes).decode('utf-8')
+        # On réduit la taille de l'image pour ne pas faire planter Render (limite 512MB)
+        img = Image.open(io.BytesIO(img_bytes))
+        img.thumbnail((1024, 1024)) # Redimensionne si l'image est trop grande
+        
+        buffered = io.BytesIO()
+        img.save(buffered, format="JPEG", quality=85)
+        base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-        # Tentative avec le modèle Vision 90B
-        # Si ce modèle échoue, Groq renverra une erreur claire dans les logs
+        # Utilisation du modèle Vision 90B
         response = client.chat.completions.create(
             model="llama-3.2-90b-vision-preview",
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Extrait tout le texte de ce document médical. Organise-le bien."},
+                        {"type": "text", "text": "Extrait le texte de ce document médical pour Réginalde. Organise-le bien par sections."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }
@@ -95,5 +97,15 @@ async def ocr(image: UploadFile = File(...)):
             "image": f"data:image/jpeg;base64,{base64_image}"
         }
     except Exception as e:
-        print(f"Erreur OCR détaillée : {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erreur IA : {str(e)}")
+        # On renvoie l'erreur précise pour débugger
+        print(f"Erreur OCR : {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/history")
+async def get_history():
+    files = sorted(os.listdir(HISTORY_DIR), reverse=True)[:15]
+    return {"files": files}
+
+@app.get("/download/{filename}")
+async def download(filename: str):
+    return FileResponse(os.path.join(HISTORY_DIR, filename))
