@@ -2,92 +2,103 @@ import os
 import io
 import time
 import base64
-import shutil
+import cv2
+import numpy as np
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from openpyxl import load_workbook
 from groq import Groq
 
 app = FastAPI()
+
+# Autorisation CORS pour que le front puisse parler au back
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Dossier pour l'historique
+# Dossier Historique
 HISTORY_DIR = "history"
 if not os.path.exists(HISTORY_DIR):
     os.makedirs(HISTORY_DIR)
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-@app.post("/process")
-async def process_medical_file(
-    file: UploadFile = File(...),
-    instruction: str = Form(None),
-    audio: UploadFile = File(None)
-):
-    file_bytes = await file.read()
-    df_original = pd.read_excel(io.BytesIO(file_bytes), skiprows=3)
-    df_modified = df_original.copy()
+@app.get("/healthz")
+async def healthz(): return {"status": "ok"}
 
+# --- PARTIE EXCEL ---
+@app.post("/process")
+async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
+    file_bytes = await file.read()
+    # On lit le fichier pour l'IA (on saute les 3 lignes de titre comme sur la photo)
+    df_orig = pd.read_excel(io.BytesIO(file_bytes), skiprows=3)
+    df_mod = df_orig.copy()
+
+    # Gestion de l'audio si présent
     user_text = instruction
     if audio:
-        audio_content = await audio.read()
-        trans = client.audio.transcriptions.create(file=("a.wav", audio_content), model="whisper-large-v3", language="fr")
+        audio_data = await audio.read()
+        trans = client.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
         user_text = trans.text
 
-    prompt = f"Modifie le DataFrame 'df' (Colonnes: {list(df_original.columns)}). Instruction: '{user_text}'. Code pur uniquement."
-    chat = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}])
+    # Demande de code à l'IA
+    prompt = f"""
+    Modifie le DataFrame 'df' (Colonnes: {list(df_orig.columns)}).
+    Instruction: "{user_text}"
+    RÈGLES: 
+    1. Réponds UNIQUEMENT avec le code Python. 
+    2. Utilise df.at[index, 'colonne'] pour être précis. 
+    3. Pas de blabla, pas de markdown.
+    """
+    chat = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0)
     code = chat.choices[0].message.content.strip().replace("```python", "").replace("```", "")
 
-    local_scope = {"df": df_modified, "pd": pd}
-    exec(code, {}, local_scope)
-    df_modified = local_scope["df"]
+    # Exécution
+    exec_scope = {"df": df_mod, "pd": pd, "np": np}
+    exec(code, {}, exec_scope)
+    df_mod = exec_scope["df"]
 
+    # Injection Openpyxl (Garde le Design)
     wb = load_workbook(io.BytesIO(file_bytes))
     ws = wb.active
-    for r_idx in range(len(df_original)):
-        for col_idx in range(len(df_original.columns)):
-            val_mod = df_modified.iat[row_idx, col_idx]
-            ws.cell(row=5 + r_idx, column=col_idx + 1).value = val_mod
+    for r in range(len(df_orig)):
+        for c in range(len(df_orig.columns)):
+            ws.cell(row=5 + r, column=c + 1).value = df_mod.iat[r, c]
 
-    # Sauvegarde dans l'historique avec un nom unique
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    filename = f"Réginalde_{timestamp}.xlsx"
-    filepath = os.path.join(HISTORY_DIR, filename)
-    wb.save(filepath)
-    
-    return FileResponse(filepath, filename=filename)
+    # Sauvegarde Historique
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    fname = f"Reginalde_{ts}.xlsx"
+    fpath = os.path.join(HISTORY_DIR, fname)
+    wb.save(fpath)
+    return FileResponse(fpath, filename=fname)
 
 @app.get("/history")
 async def get_history():
-    files = sorted(os.listdir(HISTORY_DIR), reverse=True)
+    files = sorted(os.listdir(HISTORY_DIR), reverse=True)[:10] # 10 derniers
     return {"files": files}
 
-@app.get("/download-history/{filename}")
-async def download_history(filename: str):
-    path = os.path.join(HISTORY_DIR, filename)
-    return FileResponse(path)
+@app.get("/download/{filename}")
+async def download(filename: str):
+    return FileResponse(os.path.join(HISTORY_DIR, filename))
 
+# --- PARTIE SCANNER (YEUX BIONIQUES) ---
 @app.post("/ocr")
-async def ocr_image(image: UploadFile = File(...)):
-    """Analyse une photo de document et extrait le texte"""
-    image_bytes = await image.read()
-    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+async def ocr(image: UploadFile = File(...)):
+    img_bytes = await image.read()
     
-    completion = client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview", # Modèle Vision de Groq
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Extrait tout le texte lisible de cette photo de document de suivi médical. Formate le texte pour qu'il soit facile à lire et à copier."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]
-            }
-        ]
-    )
-    return {"text": completion.choices[0].message.content}
+    # Amélioration de l'image (Contraste pour Réginalde)
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    enhanced = cv2.convertScaleAbs(img, alpha=1.4, beta=10)
+    _, buffer = cv2.imencode('.jpg', enhanced)
+    b64_img = base64.b64encode(buffer).decode('utf-8')
 
-@app.get("/healthz")
-async def healthz(): return {"status": "ok"}
+    # Vision IA
+    res = client.chat.completions.create(
+        model="llama-3.2-11b-vision-preview",
+        messages=[{"role": "user", "content": [
+            {"type": "text", "text": "Extrait le texte de ce document médical. Organise-le de façon très claire et aérée."},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+        ]}]
+    )
+    return {"text": res.choices[0].message.content, "image": f"data:image/jpeg;base64,{b64_img}"}
