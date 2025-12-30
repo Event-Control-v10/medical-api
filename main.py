@@ -27,12 +27,14 @@ if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 # Clients
 client_groq = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-model_vision = genai.GenerativeModel('gemini-1.5-flash')
+
+# CORRECTION ICI : Utilisation du tag 'latest' pour forcer la version récente
+model_vision = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- EXCEL (Reste identique car il marche) ---
+# --- EXCEL ---
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
     try:
@@ -48,7 +50,6 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
 
         if not user_text: return {"error": "Aucune consigne"}
 
-        # Prompt Strict Anti-Hallucination
         prompt = f"""
         DataFrame df (Colonnes: {list(df_orig.columns)}). Instruction: "{user_text}".
         RÈGLES ABSOLUES:
@@ -69,7 +70,6 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         ws = wb.active
         START_ROW = 5 
         
-        # Nettoyage et Injection
         for row in ws.iter_rows(min_row=START_ROW, max_row=ws.max_row):
             for cell in row: cell.value = None
 
@@ -85,39 +85,29 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- SCANNER CORRIGÉ (VERSION SOLIDE) ---
+# --- SCANNER ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
-        print(f"Réception image : {image.filename}") # Log
+        print(f"Réception image : {image.filename}")
         img_bytes = await image.read()
         
-        # 1. Ouverture sécurisée avec Pillow
-        try:
-            img = Image.open(io.BytesIO(img_bytes))
-        except Exception as e:
-            raise HTTPException(status_code=400, detail="Fichier image invalide")
-
-        # 2. Conversion FORCÉE en RGB (Supprime transparence, CMYK, Palette...)
+        img = Image.open(io.BytesIO(img_bytes))
         if img.mode != "RGB":
             img = img.convert("RGB")
         
-        # 3. Redimensionnement (Évite de saturer Render)
         img.thumbnail((1024, 1024))
         
-        # 4. Sauvegarde propre en JPEG en mémoire
         buffered = io.BytesIO()
         img.save(buffered, format="JPEG", quality=85)
-        image_data = buffered.getvalue() # Bytes purs
+        image_data = buffered.getvalue()
 
-        # 5. Envoi à Gemini
         print("Envoi à Gemini...")
         response = model_vision.generate_content([
             "Analyse ce document médical. Extrait tout le texte lisible. Sois précis et structuré.",
             {"mime_type": "image/jpeg", "data": image_data}
         ])
         
-        # 6. Retour au front-end
         base64_image = base64.b64encode(image_data).decode('utf-8')
         return {
             "text": response.text,
@@ -125,7 +115,7 @@ async def ocr(image: UploadFile = File(...)):
         }
 
     except Exception as e:
-        print(f"ERREUR CRITIQUE OCR : {str(e)}") # Visible dans les logs Render
+        print(f"ERREUR CRITIQUE OCR : {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erreur technique : {str(e)}")
 
 @app.get("/history")
