@@ -8,10 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from openpyxl import load_workbook
 from groq import Groq
+import google.generativeai as genai
 from PIL import Image
 
 app = FastAPI()
 
+# Configuration pour autoriser GitHub Pages
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,16 +25,18 @@ app.add_middleware(
 HISTORY_DIR = "history"
 if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+# --- CLIENT 1 : GROQ (Pour la logique et le code) ---
+client_groq = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# --- CONFIGURATION DES MODÈLES (VERSION DÉCEMBRE 2025) ---
-MODEL_EXCEL = "llama-3.3-70b-versatile"
-MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct" # Nouveau modèle Llama 4
+# --- CLIENT 2 : GOOGLE GEMINI (Pour les yeux bioniques) ---
+# Si tu n'as pas encore la clé, va sur https://aistudio.google.com/app/apikey
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+model_vision = genai.GenerativeModel('gemini-1.5-flash')
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- PARTIE EXCEL ---
+# --- PARTIE EXCEL (Cerveau: Groq) ---
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
     try:
@@ -41,25 +45,36 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         df_mod = df_orig.copy()
 
         user_text = instruction
+        # Transcription Audio via Groq (Ultra rapide)
         if audio:
             audio_data = await audio.read()
-            trans = client.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
+            trans = client_groq.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
             user_text = trans.text
 
         if not user_text: return {"error": "Aucune consigne"}
 
-        prompt = f"DataFrame df colonnes: {list(df_orig.columns)}. Instruction: {user_text}. Code Python uniquement (df.at[index, 'colonne'] = val). Pas de blabla."
-        chat = client.chat.completions.create(
-            model=MODEL_EXCEL, 
+        # Génération du code Python via Groq Llama 3.3
+        prompt = f"""
+        DataFrame 'df' colonnes: {list(df_orig.columns)}. 
+        Instruction: "{user_text}". 
+        RÈGLES: 
+        - Code Python uniquement. 
+        - Utilise df.at[index, 'col'] = val.
+        - Pas de markdown.
+        """
+        chat = client_groq.chat.completions.create(
+            model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}], 
             temperature=0
         )
         code = chat.choices[0].message.content.strip().replace("```python", "").replace("```", "")
 
+        # Exécution
         exec_scope = {"df": df_mod, "pd": pd}
         exec(code, {}, exec_scope)
         df_mod = exec_scope["df"]
 
+        # Injection dans l'Excel original (Garde le Design)
         wb = load_workbook(io.BytesIO(file_bytes))
         ws = wb.active
         START_ROW = 5 
@@ -76,55 +91,30 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- PARTIE SCANNER (VERSION LLAMA 4) ---
+# --- PARTIE SCANNER (Yeux: Gemini) ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
         img_bytes = await image.read()
         
+        # Nettoyage de l'image (Fix RGBA/Palette)
         img = Image.open(io.BytesIO(img_bytes))
         if img.mode != "RGB":
             img = img.convert("RGB")
         
-        img.thumbnail((1024, 1024)) 
-        
         buffered = io.BytesIO()
-        img.save(buffered, format="JPEG", quality=85)
+        img.save(buffered, format="JPEG")
+        
+        # Analyse par Gemini Vision
+        response = model_vision.generate_content([
+            "Tu es un assistant médical. Analyse ce document pour Réginalde. Extrait tout le texte et structure-le.",
+            {"mime_type": "image/jpeg", "data": buffered.getvalue()}
+        ])
+        
         base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
-
-        # Utilisation du nouveau modèle Llama 4 Multimodal
-        response = client.chat.completions.create(
-            model=MODEL_VISION,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Tu es un assistant administratif expert en extraction de données (OCR Intelligent).
-Ta mission est STRICTEMENT d'extraire les informations visibles sur l'image fournie.
-
-Ne fais aucune analyse médicale. Ne donne pas de conseils. Ne juge pas le contenu.
-Ton seul but est de remplir les champs ci-dessous.
-
-Si l'image contient les informations, extrais-les.
-Si une information n'est pas présente, écris "Non spécifié".
-
-Renvoie UNIQUEMENT un résultat structuré comme ceci :
-
-1. Nom de l'établissement (Hôpital, Clinique, ou Titre du document) :
-2. Nom du patient (ou de la personne concernée) :
-3. Numéro de dossier / ID :
-4. Date du document :
-5. Résumé court du contenu (max 1 phrase) :
-
-Si le document n'est pas médical (ex: un cours, une facture), extrais quand même les titres et les noms visibles.."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]
-                }
-            ],
-        )
         
         return {
-            "text": response.choices[0].message.content,
+            "text": response.text,
             "image": f"data:image/jpeg;base64,{base64_image}"
         }
     except Exception as e:
