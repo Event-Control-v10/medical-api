@@ -28,8 +28,8 @@ if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 client_groq = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# CORRECTION ICI : Utilisation du tag 'latest' pour forcer la version récente
-model_vision = genai.GenerativeModel('gemini-1.5-flash-latest')
+# --- CORRECTION ICI : ON UTILISE LE NOM STANDARD ---
+model_vision = genai.GenerativeModel('gemini-1.5-flash')
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
@@ -96,13 +96,14 @@ async def ocr(image: UploadFile = File(...)):
         if img.mode != "RGB":
             img = img.convert("RGB")
         
+        # On garde une taille correcte pour la lisibilité
         img.thumbnail((1024, 1024))
         
         buffered = io.BytesIO()
         img.save(buffered, format="JPEG", quality=85)
         image_data = buffered.getvalue()
 
-        print("Envoi à Gemini...")
+        print("Envoi à Gemini 1.5 Flash...")
         response = model_vision.generate_content([
             "Analyse ce document médical. Extrait tout le texte lisible. Sois précis et structuré.",
             {"mime_type": "image/jpeg", "data": image_data}
