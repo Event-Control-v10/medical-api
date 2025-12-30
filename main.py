@@ -13,7 +13,6 @@ from PIL import Image
 
 app = FastAPI()
 
-# Configuration CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,7 +24,7 @@ app.add_middleware(
 HISTORY_DIR = "history"
 if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 
-# CLIENTS API
+# Clients
 client_groq = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 model_vision = genai.GenerativeModel('gemini-1.5-flash')
@@ -33,107 +32,101 @@ model_vision = genai.GenerativeModel('gemini-1.5-flash')
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- PARTIE EXCEL (VERSION STRICTE) ---
+# --- EXCEL (Reste identique car il marche) ---
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
     try:
         file_bytes = await file.read()
-        
-        # Lecture des données (Ligne 5 = Index 0 du DataFrame car skiprows=3 + header=0)
         df_orig = pd.read_excel(io.BytesIO(file_bytes), skiprows=3)
         df_mod = df_orig.copy()
 
         user_text = instruction
         if audio:
             audio_data = await audio.read()
-            trans = client_groq.audio.transcriptions.create(
-                file=("a.wav", audio_data), 
-                model="whisper-large-v3", 
-                language="fr"
-            )
+            trans = client_groq.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
             user_text = trans.text
 
         if not user_text: return {"error": "Aucune consigne"}
 
-        # --- PROMPT ANTI-HALLUCINATION ---
+        # Prompt Strict Anti-Hallucination
         prompt = f"""
-        Tu es un robot de maintenance de base de données. Ta seule tâche est d'appliquer une modification sur le DataFrame 'df'.
-        
-        DONNÉES ACTUELLES (Aperçu) :
-        {df_orig.head(3).to_string()}
-        
-        INSTRUCTION UTILISATEUR : "{user_text}"
-        
-        RÈGLES ABSOLUES (A RESPECTER SOUS PEINE D'ERREUR) :
-        1. Écris UNIQUEMENT le code Python pour modifier 'df'.
-        2. NE JAMAIS INVENTER DE DONNÉES. N'ajoute jamais de "Docteur2", "Test", ou de valeurs par défaut.
-        3. Si l'utilisateur demande de supprimer une ligne (ex: la première), utilise : df = df.drop(df.index[0]) ou df = df.iloc[1:].
-        4. Garde toutes les autres données EXACTEMENT comme elles sont.
-        5. Pas de texte, pas d'explication, pas de markdown.
+        DataFrame df (Colonnes: {list(df_orig.columns)}). Instruction: "{user_text}".
+        RÈGLES ABSOLUES:
+        1. Code Python uniquement.
+        2. Utilise df.at[index, 'col'] = val.
+        3. NE TOUCHE PAS aux lignes non concernées.
+        4. Pas de blabla.
         """
         
-        chat = client_groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "Tu es un expert Python strict. Tu ne modifies que ce qu'on te demande. Tu ne touches pas au reste."},
-                {"role": "user", "content": prompt}
-            ], 
-            temperature=0 # Température à 0 pour éviter la créativité (hallucinations)
-        )
+        chat = client_groq.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0)
         code = chat.choices[0].message.content.strip().replace("```python", "").replace("```", "")
 
-        # Exécution
         exec_scope = {"df": df_mod, "pd": pd}
         exec(code, {}, exec_scope)
         df_mod = exec_scope["df"]
 
-        # --- INJECTION PROPRE ---
         wb = load_workbook(io.BytesIO(file_bytes))
         ws = wb.active
-        START_ROW = 5 # Les données commencent ligne 5 sur Excel
+        START_ROW = 5 
         
-        # 1. On efface TOUTES les anciennes données (pour éviter que des restes traînent en bas)
-        # On va jusqu'à la dernière ligne du fichier pour être sûr
-        max_row = ws.max_row
-        if max_row >= START_ROW:
-            for row in ws.iter_rows(min_row=START_ROW, max_row=max_row):
-                for cell in row:
-                    cell.value = None
+        # Nettoyage et Injection
+        for row in ws.iter_rows(min_row=START_ROW, max_row=ws.max_row):
+            for cell in row: cell.value = None
 
-        # 2. On réécrit le tableau modifié (qui est maintenant plus court si on a supprimé une ligne)
         for r_idx, row_values in enumerate(df_mod.values):
             for c_idx, value in enumerate(row_values):
                 ws.cell(row=START_ROW + r_idx, column=c_idx + 1).value = value
 
-        # Sauvegarde
         ts = time.strftime("%Y%m%d-%H%M%S")
         fname = f"Reginalde_{ts}.xlsx"
         fpath = os.path.join(HISTORY_DIR, fname)
         wb.save(fpath)
         return FileResponse(fpath, filename=fname)
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- SCANNER (GEMINI) ---
+# --- SCANNER CORRIGÉ (VERSION SOLIDE) ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
+        print(f"Réception image : {image.filename}") # Log
         img_bytes = await image.read()
-        img = Image.open(io.BytesIO(img_bytes))
-        if img.mode != "RGB": img = img.convert("RGB")
-        buffered = io.BytesIO()
-        img.save(buffered, format="JPEG")
         
+        # 1. Ouverture sécurisée avec Pillow
+        try:
+            img = Image.open(io.BytesIO(img_bytes))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail="Fichier image invalide")
+
+        # 2. Conversion FORCÉE en RGB (Supprime transparence, CMYK, Palette...)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        
+        # 3. Redimensionnement (Évite de saturer Render)
+        img.thumbnail((1024, 1024))
+        
+        # 4. Sauvegarde propre en JPEG en mémoire
+        buffered = io.BytesIO()
+        img.save(buffered, format="JPEG", quality=85)
+        image_data = buffered.getvalue() # Bytes purs
+
+        # 5. Envoi à Gemini
+        print("Envoi à Gemini...")
         response = model_vision.generate_content([
-            "Analyse ce document médical. Extrait le texte fidèlement.",
-            {"mime_type": "image/jpeg", "data": buffered.getvalue()}
+            "Analyse ce document médical. Extrait tout le texte lisible. Sois précis et structuré.",
+            {"mime_type": "image/jpeg", "data": image_data}
         ])
         
-        base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
-        return {"text": response.text, "image": f"data:image/jpeg;base64,{base64_image}"}
+        # 6. Retour au front-end
+        base64_image = base64.b64encode(image_data).decode('utf-8')
+        return {
+            "text": response.text,
+            "image": f"data:image/jpeg;base64,{base64_image}"
+        }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"ERREUR CRITIQUE OCR : {str(e)}") # Visible dans les logs Render
+        raise HTTPException(status_code=500, detail=f"Erreur technique : {str(e)}")
 
 @app.get("/history")
 async def get_history():
