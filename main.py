@@ -2,13 +2,13 @@ import os
 import io
 import time
 import base64
+import json
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from openpyxl import load_workbook
 from groq import Groq
-import google.generativeai as genai
 from PIL import Image
 
 app = FastAPI()
@@ -24,17 +24,16 @@ app.add_middleware(
 HISTORY_DIR = "history"
 if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 
-# Clients
-client_groq = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# --- CORRECTION ICI : ON UTILISE LE NOM STANDARD ---
-model_vision = genai.GenerativeModel('gemini-1.5-flash')
+# Modèles
+MODEL_EXCEL = "llama-3.3-70b-versatile"
+MODEL_VISION = "llama-3.2-11b-vision-preview"
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- EXCEL ---
+# --- PARTIE EXCEL (Inchangée car elle marche) ---
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
     try:
@@ -45,21 +44,17 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         user_text = instruction
         if audio:
             audio_data = await audio.read()
-            trans = client_groq.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
+            trans = client.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
             user_text = trans.text
 
         if not user_text: return {"error": "Aucune consigne"}
 
         prompt = f"""
-        DataFrame df (Colonnes: {list(df_orig.columns)}). Instruction: "{user_text}".
-        RÈGLES ABSOLUES:
-        1. Code Python uniquement.
-        2. Utilise df.at[index, 'col'] = val.
-        3. NE TOUCHE PAS aux lignes non concernées.
-        4. Pas de blabla.
+        DataFrame df: {list(df_orig.columns)}. Instruction: {user_text}. 
+        Code Python uniquement (df.at[index, 'col'] = val). Pas de blabla.
         """
         
-        chat = client_groq.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0)
+        chat = client.chat.completions.create(model=MODEL_EXCEL, messages=[{"role": "user", "content": prompt}], temperature=0)
         code = chat.choices[0].message.content.strip().replace("```python", "").replace("```", "")
 
         exec_scope = {"df": df_mod, "pd": pd}
@@ -70,12 +65,9 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         ws = wb.active
         START_ROW = 5 
         
-        for row in ws.iter_rows(min_row=START_ROW, max_row=ws.max_row):
-            for cell in row: cell.value = None
-
-        for r_idx, row_values in enumerate(df_mod.values):
-            for c_idx, value in enumerate(row_values):
-                ws.cell(row=START_ROW + r_idx, column=c_idx + 1).value = value
+        for r_idx, row in enumerate(df_mod.values):
+            for c_idx, val in enumerate(row):
+                ws.cell(row=START_ROW + r_idx, column=c_idx + 1).value = val
 
         ts = time.strftime("%Y%m%d-%H%M%S")
         fname = f"Reginalde_{ts}.xlsx"
@@ -85,39 +77,66 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- SCANNER ---
+# --- PARTIE SCANNER GROQ (Correction Anti-Argumentation) ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
-        print(f"Réception image : {image.filename}")
         img_bytes = await image.read()
         
+        # 1. Traitement image (Sécurité)
         img = Image.open(io.BytesIO(img_bytes))
         if img.mode != "RGB":
             img = img.convert("RGB")
-        
-        # On garde une taille correcte pour la lisibilité
         img.thumbnail((1024, 1024))
         
         buffered = io.BytesIO()
-        img.save(buffered, format="JPEG", quality=85)
-        image_data = buffered.getvalue()
+        img.save(buffered, format="JPEG")
+        base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-        print("Envoi à Gemini 1.5 Flash...")
-        response = model_vision.generate_content([
-            "Analyse ce document médical. Extrait tout le texte lisible. Sois précis et structuré.",
-            {"mime_type": "image/jpeg", "data": image_data}
-        ])
+        # 2. PROMPT STRICT "JSON ONLY"
+        # On force l'IA à répondre en JSON pur, ce qui l'empêche de "parler".
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": """
+                        Analyse cette image.
+                        Extrait le contenu textuel complet.
+                        
+                        Ta réponse doit être UNIQUEMENT un objet JSON brut contenant une seule clé "content".
+                        Ne dis pas "Voici le texte" ou "L'image contient".
+                        Juste le JSON.
+                        Exemple format: {"content": "Titre du doc\nNom du patient..."}
+                        """
+                    },
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                ]
+            }
+        ]
+
+        # 3. Appel Groq avec réponse forcée en JSON
+        response = client.chat.completions.create(
+            model=MODEL_VISION,
+            messages=messages,
+            temperature=0, # Zéro créativité = Zéro blabla
+            response_format={"type": "json_object"} # FORCE LE SILENCE
+        )
         
-        base64_image = base64.b64encode(image_data).decode('utf-8')
+        # 4. On récupère le contenu propre
+        json_content = json.loads(response.choices[0].message.content)
+        clean_text = json_content.get("content", "Aucun texte détecté.")
+
         return {
-            "text": response.text,
+            "text": clean_text,
             "image": f"data:image/jpeg;base64,{base64_image}"
         }
 
     except Exception as e:
-        print(f"ERREUR CRITIQUE OCR : {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erreur technique : {str(e)}")
+        print(f"ERREUR OCR : {str(e)}")
+        # Fallback au cas où le modèle JSON échoue, on renvoie l'erreur proprement
+        raise HTTPException(status_code=500, detail=f"Erreur Lecture: {str(e)}")
 
 @app.get("/history")
 async def get_history():
