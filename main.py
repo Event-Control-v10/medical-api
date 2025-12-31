@@ -23,12 +23,14 @@ app.add_middleware(
 HISTORY_DIR = "history"
 if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 
-# UNIQUE CLIENT : GROQ
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# MODÈLES OFFICIELS GROQ (DÉCEMBRE 2025)
+# --- MODÈLES GROQ ---
+# Pour le texte (Cerveau) : On garde Llama 3.3 (Le meilleur)
 MODEL_EXCEL = "llama-3.3-70b-versatile"
-MODEL_VISION = "llama-3.2-11b-vision-preview"
+
+# Pour la vision (Yeux) : On passe sur Llava (Le seul survivant)
+MODEL_VISION = "llava-v1.5-7b-4096-preview"
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
@@ -44,13 +46,11 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         user_text = instruction
         if audio:
             audio_data = await audio.read()
-            # Whisper est toujours dispo sur Groq et marche très bien
             trans = client.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
             user_text = trans.text
 
         if not user_text: return {"error": "Aucune consigne"}
 
-        # Prompt strict pour le code
         prompt = f"""
         DataFrame df colonnes: {list(df_orig.columns)}. 
         Instruction: "{user_text}". 
@@ -60,11 +60,7 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         - Pas de markdown.
         """
         
-        chat = client.chat.completions.create(
-            model=MODEL_EXCEL,
-            messages=[{"role": "user", "content": prompt}], 
-            temperature=0
-        )
+        chat = client.chat.completions.create(model=MODEL_EXCEL, messages=[{"role": "user", "content": prompt}], temperature=0)
         code = chat.choices[0].message.content.strip().replace("```python", "").replace("```", "")
 
         exec_scope = {"df": df_mod, "pd": pd}
@@ -87,18 +83,18 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- PARTIE SCANNER GROQ (ANTI-BLABLA) ---
+# --- PARTIE SCANNER (LLAVA) ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
         img_bytes = await image.read()
         
-        # 1. Préparation Image (Indispensable pour Groq)
+        # Préparation image
         img = Image.open(io.BytesIO(img_bytes))
         if img.mode != "RGB":
             img = img.convert("RGB")
         
-        # Redimensionnement (Évite l'erreur de modèle trop chargé)
+        # Llava a besoin d'images petites
         img.thumbnail((800, 800))
         
         buffered = io.BytesIO()
@@ -106,8 +102,7 @@ async def ocr(image: UploadFile = File(...)):
         base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{base64_image}"
 
-        # 2. Envoi à Groq avec instruction de SILENCE
-        # On utilise le modèle 11B qui est fait pour ça
+        # Appel à Llava (Le modèle de secours)
         response = client.chat.completions.create(
             model=MODEL_VISION,
             messages=[
@@ -116,7 +111,7 @@ async def ocr(image: UploadFile = File(...)):
                     "content": [
                         {
                             "type": "text", 
-                            "text": "Extrait le texte de cette image. Liste les informations médicales (Patient, Docteur, Date, Acte). Ne fais aucune phrase d'introduction ou de conclusion. Donne juste le texte brut."
+                            "text": "Liste tout le texte visible sur cette image médicale. Sois direct."
                         },
                         {
                             "type": "image_url", 
@@ -125,7 +120,7 @@ async def ocr(image: UploadFile = File(...)):
                     ]
                 }
             ],
-            temperature=0, # Zéro créativité = Zéro argumentation
+            temperature=0.1,
             max_tokens=1024
         )
         
@@ -135,7 +130,6 @@ async def ocr(image: UploadFile = File(...)):
         }
     except Exception as e:
         print(f"DEBUG GROQ : {str(e)}")
-        # Si le modèle Vision 11B plante, c'est une erreur serveur temporaire de Groq
         raise HTTPException(status_code=500, detail=f"Erreur Groq: {str(e)}")
 
 @app.get("/history")
