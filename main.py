@@ -2,7 +2,6 @@ import os
 import io
 import time
 import base64
-import json
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,16 +23,17 @@ app.add_middleware(
 HISTORY_DIR = "history"
 if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
 
+# UNIQUE CLIENT : GROQ
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# Modèles
+# MODÈLES OFFICIELS GROQ (DÉCEMBRE 2025)
 MODEL_EXCEL = "llama-3.3-70b-versatile"
 MODEL_VISION = "llama-3.2-11b-vision-preview"
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
-# --- PARTIE EXCEL (Inchangée car elle marche) ---
+# --- PARTIE EXCEL ---
 @app.post("/process")
 async def process_excel(file: UploadFile = File(...), instruction: str = Form(None), audio: UploadFile = File(None)):
     try:
@@ -44,17 +44,27 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
         user_text = instruction
         if audio:
             audio_data = await audio.read()
+            # Whisper est toujours dispo sur Groq et marche très bien
             trans = client.audio.transcriptions.create(file=("a.wav", audio_data), model="whisper-large-v3", language="fr")
             user_text = trans.text
 
         if not user_text: return {"error": "Aucune consigne"}
 
+        # Prompt strict pour le code
         prompt = f"""
-        DataFrame df: {list(df_orig.columns)}. Instruction: {user_text}. 
-        Code Python uniquement (df.at[index, 'col'] = val). Pas de blabla.
+        DataFrame df colonnes: {list(df_orig.columns)}. 
+        Instruction: "{user_text}". 
+        RÈGLES: 
+        - Code Python uniquement. 
+        - Utilise df.at[index, 'col'] = val.
+        - Pas de markdown.
         """
         
-        chat = client.chat.completions.create(model=MODEL_EXCEL, messages=[{"role": "user", "content": prompt}], temperature=0)
+        chat = client.chat.completions.create(
+            model=MODEL_EXCEL,
+            messages=[{"role": "user", "content": prompt}], 
+            temperature=0
+        )
         code = chat.choices[0].message.content.strip().replace("```python", "").replace("```", "")
 
         exec_scope = {"df": df_mod, "pd": pd}
@@ -77,66 +87,56 @@ async def process_excel(file: UploadFile = File(...), instruction: str = Form(No
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- PARTIE SCANNER GROQ (Correction Anti-Argumentation) ---
+# --- PARTIE SCANNER GROQ (ANTI-BLABLA) ---
 @app.post("/ocr")
 async def ocr(image: UploadFile = File(...)):
     try:
         img_bytes = await image.read()
         
-        # 1. Traitement image (Sécurité)
+        # 1. Préparation Image (Indispensable pour Groq)
         img = Image.open(io.BytesIO(img_bytes))
         if img.mode != "RGB":
             img = img.convert("RGB")
-        img.thumbnail((1024, 1024))
+        
+        # Redimensionnement (Évite l'erreur de modèle trop chargé)
+        img.thumbnail((800, 800))
         
         buffered = io.BytesIO()
         img.save(buffered, format="JPEG")
         base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        data_url = f"data:image/jpeg;base64,{base64_image}"
 
-        # 2. PROMPT STRICT "JSON ONLY"
-        # On force l'IA à répondre en JSON pur, ce qui l'empêche de "parler".
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": """
-                        Analyse cette image.
-                        Extrait le contenu textuel complet.
-                        
-                        Ta réponse doit être UNIQUEMENT un objet JSON brut contenant une seule clé "content".
-                        Ne dis pas "Voici le texte" ou "L'image contient".
-                        Juste le JSON.
-                        Exemple format: {"content": "Titre du doc\nNom du patient..."}
-                        """
-                    },
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]
-            }
-        ]
-
-        # 3. Appel Groq avec réponse forcée en JSON
+        # 2. Envoi à Groq avec instruction de SILENCE
+        # On utilise le modèle 11B qui est fait pour ça
         response = client.chat.completions.create(
             model=MODEL_VISION,
-            messages=messages,
-            temperature=0, # Zéro créativité = Zéro blabla
-            response_format={"type": "json_object"} # FORCE LE SILENCE
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text", 
+                            "text": "Extrait le texte de cette image. Liste les informations médicales (Patient, Docteur, Date, Acte). Ne fais aucune phrase d'introduction ou de conclusion. Donne juste le texte brut."
+                        },
+                        {
+                            "type": "image_url", 
+                            "image_url": {"url": data_url}
+                        }
+                    ]
+                }
+            ],
+            temperature=0, # Zéro créativité = Zéro argumentation
+            max_tokens=1024
         )
         
-        # 4. On récupère le contenu propre
-        json_content = json.loads(response.choices[0].message.content)
-        clean_text = json_content.get("content", "Aucun texte détecté.")
-
         return {
-            "text": clean_text,
-            "image": f"data:image/jpeg;base64,{base64_image}"
+            "text": response.choices[0].message.content,
+            "image": data_url
         }
-
     except Exception as e:
-        print(f"ERREUR OCR : {str(e)}")
-        # Fallback au cas où le modèle JSON échoue, on renvoie l'erreur proprement
-        raise HTTPException(status_code=500, detail=f"Erreur Lecture: {str(e)}")
+        print(f"DEBUG GROQ : {str(e)}")
+        # Si le modèle Vision 11B plante, c'est une erreur serveur temporaire de Groq
+        raise HTTPException(status_code=500, detail=f"Erreur Groq: {str(e)}")
 
 @app.get("/history")
 async def get_history():
