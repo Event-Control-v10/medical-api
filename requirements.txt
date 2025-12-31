@@ -4,6 +4,5 @@ python-multipart
 pandas
 openpyxl
 groq
-google-generativeai>=0.7.2
 pillow
 pydub
